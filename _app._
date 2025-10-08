@@ -1,0 +1,156 @@
+import streamlit as st
+import os
+from dotenv import load_dotenv
+
+# Importações do Langchain para usar OpenAI e carregar diferentes tipos de arquivos
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, UnstructuredPowerPointLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+
+# --- FUNÇÕES DE LÓGICA DO AGENTE ---
+
+# Função para carregar a chave da API e inicializar os modelos da OpenAI
+def configure_agent(api_key):
+    """Inicializa os modelos de LLM (GPT) e Embeddings com a chave de API da OpenAI."""
+    try:
+        llm = ChatOpenAI(model="gpt-3.5-turbo", api_key=api_key)
+        embeddings = OpenAIEmbeddings(api_key=api_key)
+        return llm, embeddings
+    except Exception as e:
+        st.error(f"Erro ao inicializar os modelos da OpenAI: {e}")
+        return None, None
+
+# Função para processar os arquivos de uma pasta e criar a base de conhecimento
+@st.cache_resource
+def create_vector_store_from_docs(_embeddings_model):
+    """
+    Lê os arquivos PDF, DOCX e PPTX da pasta 'docs', extrai o texto, cria os embeddings
+    e armazena em um Vector Store (FAISS).
+    """
+    docs_path = "docs"
+    if not os.path.exists(docs_path) or not os.listdir(docs_path):
+        return None
+
+    documents = []
+    file_count = 0
+    with st.spinner(f'Lendo arquivos da pasta "docs"...'):
+        for file_name in os.listdir(docs_path):
+            file_path = os.path.join(docs_path, file_name)
+            try:
+                if file_name.endswith('.pdf'):
+                    loader = PyPDFLoader(file_path)
+                    documents.extend(loader.load())
+                    file_count += 1
+                elif file_name.endswith('.docx'):
+                    loader = UnstructuredWordDocumentLoader(file_path)
+                    documents.extend(loader.load())
+                    file_count += 1
+                elif file_name.endswith('.pptx'):
+                    loader = UnstructuredPowerPointLoader(file_path)
+                    documents.extend(loader.load())
+                    file_count += 1
+            except Exception as e:
+                st.sidebar.error(f"Erro ao ler '{file_name}': {e}")
+    
+    if not documents:
+        return None
+
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    texts = text_splitter.split_documents(documents)
+    
+    with st.spinner('Criando a base de conhecimento (Embeddings)...'):
+        vector_store = FAISS.from_documents(texts, _embeddings_model)
+    
+    st.sidebar.success(f"Base de conhecimento criada com {file_count} arquivo(s).")
+    return vector_store
+
+# --- INTERFACE GRÁFICA COM STREAMLIT ---
+
+# Carrega as variáveis de ambiente do arquivo .env
+load_dotenv()
+
+st.set_page_config(page_title="Agente de IA com GPT e RAG", layout="wide")
+
+st.title("🤖 Agente de IA com GPT (OpenAI)")
+st.write("Converse com o agente. Ele buscará respostas em seus documentos e usará seu conhecimento geral se necessário.")
+
+# --- BARRA LATERAL (SIDEBAR) PARA CONFIGURAÇÕES ---
+with st.sidebar:
+    st.header("Base de Conhecimento")
+    st.info("Este aplicativo carrega automaticamente os arquivos da pasta `docs`.")
+    st.warning("Se a pasta `docs` estiver vazia, o agente responderá apenas com seu conhecimento geral.")
+
+# --- LÓGICA PRINCIPAL DA APLICAÇÃO ---
+
+api_key = os.getenv("OPENAI_API_KEY")
+
+if not api_key:
+    st.error("A chave de API da OpenAI não foi encontrada.")
+    st.info("Por favor, configure a variável de ambiente `OPENAI_API_KEY` para continuar.")
+    st.stop()
+
+llm, embeddings = configure_agent(api_key)
+if llm is None or embeddings is None:
+    st.stop()
+
+vector_store = create_vector_store_from_docs(embeddings)
+
+# Se uma base de conhecimento foi criada, configura a cadeia de RAG com fallback
+qa_chain = None
+if vector_store:
+    prompt_template = """
+    Use as seguintes peças de contexto para responder à pergunta no final.
+    Se a resposta não estiver no contexto, informe que não encontrou a informação nos documentos e então responda a pergunta usando seu conhecimento geral.
+    Seja sempre cordial.
+
+    Contexto: {context}
+
+    Pergunta: {question}
+
+    Resposta útil:"""
+    PROMPT = PromptTemplate(
+        template=prompt_template, input_variables=["context", "question"]
+    )
+
+    retriever = vector_store.as_retriever()
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=retriever,
+        chain_type_kwargs={"prompt": PROMPT}
+    )
+
+# Inicializa o histórico do chat
+if "messages" not in st.session_state:
+    st.session_state.messages = [{"role": "assistant", "content": "Olá! Sou seu agente de IA. Como posso ajudar?"}]
+
+# Exibe as mensagens do histórico
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Captura a entrada do usuário
+if prompt := st.chat_input("Faça sua pergunta..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Pensando..."):
+            response = ""
+            # Se a cadeia de RAG com fallback existe, use-a
+            if qa_chain:
+                result = qa_chain.invoke({"query": prompt})
+                response = result['result']
+            # Caso contrário (sem documentos), use o LLM diretamente
+            else:
+                ai_response = llm.invoke(prompt)
+                response = ai_response.content
+            
+            st.markdown(response)
+    
+    st.session_state.messages.append({"role": "assistant", "content": response})
+
