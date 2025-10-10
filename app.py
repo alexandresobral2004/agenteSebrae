@@ -1,5 +1,5 @@
 # ==============================================================================
-# SCRIPT COMPLETO E OTIMIZADO PARA O ASSISTENTE DE PESQUISA (COM MEMÓRIA)
+# SCRIPT COMPLETO E OTIMIZADO PARA O ASSISTENTE DE PESQUISA (COM MEMÓRIA E GPT-4)
 # ==============================================================================
 
 import streamlit as st
@@ -11,25 +11,27 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder # NOVA IMPORTAÇÃO
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.tools.retriever import create_retriever_tool
 
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, UnstructuredPowerPointLoader
+# ATUALIZAÇÃO: Adicionada a importação para arquivos Excel (.xlsx)
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, UnstructuredPowerPointLoader, UnstructuredExcelLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain.memory import ConversationBufferMemory # NOVA IMPORTAÇÃO PARA MEMÓRIA
+from langchain.memory import ConversationBufferMemory
 
-# --- CONFIGURAÇÕES E CONSTANTES ---
+# --- CONFIGURAções E CONSTANTES ---
 
 # Caminho onde o índice FAISS vetorial será salvo e carregado
 FAISS_INDEX_PATH = "faiss_index"
 
-# --- FUNÇÕES DE LÓGICA DO AGENTE OTIMIZADAS ---
+# --- FUNções DE LÓGICA DO AGENTE OTIMIZADAS ---
 
 def configure_llm_and_embeddings(api_key):
     """Inicializa o modelo LLM (GPT) e os Embeddings com a chave de API da OpenAI."""
     try:
-        llm = ChatOpenAI(model="gpt-3.5-turbo", api_key=api_key, max_tokens=1500, temperature=0.7)
+        # ATUALIZAÇÃO: Modelo alterado para "gpt-4" para uma capacidade de análise aprimorada
+        llm = ChatOpenAI(model="gpt-4", api_key=api_key, max_tokens=2000, temperature=0.7)
         embeddings = OpenAIEmbeddings(api_key=api_key)
         return llm, embeddings
     except Exception as e:
@@ -62,6 +64,9 @@ def create_and_save_vector_store(embeddings_model):
                         loader = UnstructuredWordDocumentLoader(file_path)
                     elif file_name.endswith('.pptx'):
                         loader = UnstructuredPowerPointLoader(file_path)
+                    # ATUALIZAÇÃO: Adicionado suporte para arquivos Excel (.xlsx)
+                    elif file_name.endswith('.xlsx'):
+                        loader = UnstructuredExcelLoader(file_path)
                     
                     if loader:
                         documents.extend(loader.load())
@@ -118,8 +123,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🤖 Assistente Criativo de Pesquisa com GPT")
-st.write("Pergunte-me qualquer coisa! Eu pesquisarei nos seus documentos e na internet para fornecer respostas completas e criativas.")
+st.title("🤖 Assistente Criativo de Pesquisa com GPT-4")
+st.write("Pergunte-me qualquer coisa! Eu pesquisarei nos seus documentos (PDF, DOCX, PPTX, XLSX) e na internet para fornecer respostas completas e criativas.")
 
 with st.sidebar:
     st.header("Base de Conhecimento")
@@ -168,10 +173,6 @@ else:
     )
     tools = [retriever_tool, TavilySearchResults(max_results=3, tavily_api_key=tavily_api_key)]
 
-# ======================= NOVIDADE: INÍCIO DA SEÇÃO DE MEMÓRIA =======================
-# Adicionamos um placeholder para o histórico do chat no prompt.
-# O `MessagesPlaceholder` é uma parte especial do prompt que dirá ao Langchain onde
-# injetar o histórico da conversa.
 prompt = ChatPromptTemplate.from_messages([
     ("system", """Você é um assistente de pesquisa IA avançado e criativo.
 Sua missão é fornecer respostas longas, detalhadas e bem estruturadas.
@@ -181,25 +182,19 @@ Estratégia:
 3.  Sintetize as informações de ambas as fontes, se necessário, para criar a resposta mais completa possível.
 4.  Seja criativo e analítico. Não se limite a repetir a informação; explique, conecte ideias e ofereça insights.
 5.  Sempre cite suas fontes, seja o nome do arquivo local ou o link da web."""),
-    MessagesPlaceholder(variable_name="chat_history"), # Onde o histórico será inserido
+    MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{input}"),
     ("placeholder", "{agent_scratchpad}"),
 ])
 
-# Inicializa a memória. Usamos a ConversationBufferMemory que armazena as mensagens.
-# `memory_key` deve ser o mesmo que `variable_name` no MessagesPlaceholder.
-# `return_messages=True` garante que a memória retorne os objetos de mensagem do Langchain.
 if "memory" not in st.session_state:
     st.session_state.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-
-# ======================= NOVIDADE: FIM DA SEÇÃO DE MEMÓRIA =========================
 
 agent = create_openai_tools_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-# Lógica do Chat
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Olá! Estou pronto para pesquisar e criar. Qual é a sua pergunta?"}]
+    st.session_state.messages = [{"role": "assistant", "content": "Olá! Estou pronto para pesquisar e criar com o poder do GPT-4. Qual é a sua pergunta?"}]
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -211,10 +206,7 @@ if user_prompt := st.chat_input("Digite sua pergunta aqui..."):
         st.markdown(user_prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Pesquisando e elaborando a resposta..."):
-            # ======================= NOVIDADE: INCLUSÃO DA MEMÓRIA NA CHAMADA =======================
-            # Carregamos o histórico da memória e o incluímos na chamada `invoke`.
-            # O histórico será inserido no `MessagesPlaceholder` do prompt.
+        with st.spinner("Pesquisando e elaborando a resposta com GPT-4..."):
             chat_history = st.session_state.memory.load_memory_variables({})["chat_history"]
             response = agent_executor.invoke({
                 "input": user_prompt,
@@ -222,12 +214,10 @@ if user_prompt := st.chat_input("Digite sua pergunta aqui..."):
             })
             response_text = response['output']
             
-            # Salvamos a interação atual (pergunta do usuário e resposta do agente) na memória.
             st.session_state.memory.save_context(
                 {"input": user_prompt}, 
                 {"output": response_text}
             )
-            # ======================================================================================
 
             st.markdown(response_text)
     
